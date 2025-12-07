@@ -1,0 +1,19 @@
+# Build directories
+src/
+pkg/
+*.log
+
+# Package files
+*.pkg.tar.zst
+*.pkg.tar.xz
+
+# Temp files
+*~
+*.swp
+*.swo
+
+# Cloned source
+onnxruntime/
+
+.channels_cache_v2.json
+.users_cache.json

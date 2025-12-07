@@ -1,0 +1,17 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: User <user@example.com>
+Date: Wed, 4 Dec 2024 10:00:00 +0100
+Subject: [PATCH] Add missing cstdint header to semver.h
+
+Fix compilation error due to missing cstdint header which is required
+for uint32_t type definition.
+
+--- a/onnxruntime/core/common/semver.h
++++ b/onnxruntime/core/common/semver.h
+@@ -3,6 +3,7 @@
+
+ #pragma once
+
++#include <cstdint>
+ #include <optional>
+ #include <string_view>
