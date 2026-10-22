@@ -4,26 +4,25 @@
 
 pkgname=onnxruntime-gpu-sm61
 pkgver=1.23.2
-pkgrel=1
+pkgrel=2
 pkgdesc="ONNX Runtime with GPU support for SM_61 architecture only"
 arch=('x86_64')
 url="https://github.com/microsoft/onnxruntime"
 license=('MIT')
+# The library links the system protobuf, abseil and re2 dynamically: list
+# them, so pacman does not upgrade them from under it unnoticed.
 depends=('python' 'python-numpy' 'python-packaging'
-         're2' 'abseil-cpp' 'cuda-12.9' 'cudnn9.10-cuda12.9')
+         'protobuf' 're2' 'abseil-cpp' 'cuda-12.9' 'cudnn9.10-cuda12.9')
 makedepends=('cmake' 'git' 'pybind11' 'python-setuptools' 'python-wheel'
              'python-build' 'python-installer' 'gcc' 'ninja')
 provides=('onnxruntime' 'onnxruntime-gpu')
 conflicts=('onnxruntime' 'onnxruntime-gpu' 'onnxruntime-opt')
-source=('fix-cstdint.patch')
-sha256sums=('SKIP')
+source=("git+https://github.com/microsoft/onnxruntime.git#tag=v${pkgver}"
+        'fix-cstdint.patch')
+sha256sums=('SKIP'
+            'SKIP')
 
 prepare() {
-  # Copy existing onnxruntime repository
-  if [ ! -d "${srcdir}/onnxruntime" ]; then
-    cp -r /home/marcusmae/forge/onnxruntime "${srcdir}/"
-  fi
-
   cd "${srcdir}/onnxruntime"
 
   # Apply patch
@@ -87,8 +86,10 @@ package() {
   python -m installer --destdir="$pkgdir" *.whl
 
   # Create symlinks in /usr/lib to the library in Python site-packages
+  local pyver
+  pyver=$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')
   install -d "${pkgdir}/usr/lib"
-  ln -sf ../lib/python3.13/site-packages/onnxruntime/capi/libonnxruntime.so.${pkgver} \
+  ln -sf python${pyver}/site-packages/onnxruntime/capi/libonnxruntime.so.${pkgver} \
     "${pkgdir}/usr/lib/libonnxruntime.so.${pkgver}"
   ln -sf libonnxruntime.so.${pkgver} "${pkgdir}/usr/lib/libonnxruntime.so.1"
   ln -sf libonnxruntime.so.1 "${pkgdir}/usr/lib/libonnxruntime.so"
