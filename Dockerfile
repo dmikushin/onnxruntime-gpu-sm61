@@ -1,13 +1,14 @@
 # Build environment for onnxruntime-gpu-sm61: CachyOS x86-64-v3 (the
-# repositories of the machines it is installed on, so the package links the
-# same protobuf/abseil/re2/python), plus CUDA 12.9 - the last CUDA that
-# compiles for Pascal (sm_61) - and its cuDNN, both from the AUR.
+# repositories of the machines it is installed on, for the same Python and
+# glibc), plus CUDA 12.9 - the last CUDA that compiles for Pascal (sm_61) -
+# and its cuDNN, both from the AUR. protobuf, abseil and re2 are deliberately
+# absent: onnxruntime builds its own copies into the library.
 FROM cachyos/cachyos-v3:latest
 
 RUN pacman -Syu --noconfirm --needed \
         base-devel git sudo cmake ninja gcc14 \
         pybind11 python-setuptools python-wheel python-build python-installer \
-        python-numpy python-packaging protobuf re2 abseil-cpp \
+        python-numpy python-packaging \
         opencl-nvidia nvidia-utils \
     && pacman -Scc --noconfirm
 

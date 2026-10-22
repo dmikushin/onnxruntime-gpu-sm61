@@ -9,10 +9,11 @@ pkgdesc="ONNX Runtime with GPU support for SM_61 architecture only"
 arch=('x86_64')
 url="https://github.com/microsoft/onnxruntime"
 license=('MIT')
-# The library links the system protobuf, abseil and re2 dynamically: list
-# them, so pacman does not upgrade them from under it unnoticed.
+# protobuf, abseil and re2 are built into the library (see
+# FETCHCONTENT_TRY_FIND_PACKAGE_MODE below), so their system upgrades
+# cannot break it.
 depends=('python' 'python-numpy' 'python-packaging'
-         'protobuf' 're2' 'abseil-cpp' 'cuda-12.9' 'cudnn9.10-cuda12.9')
+         'cuda-12.9' 'cudnn9.10-cuda12.9')
 makedepends=('cmake' 'git' 'pybind11' 'python-setuptools' 'python-wheel'
              'python-build' 'python-installer' 'gcc' 'ninja')
 provides=('onnxruntime' 'onnxruntime-gpu')
@@ -63,6 +64,7 @@ build() {
       onnxruntime_ENABLE_TRAINING_OPS=OFF \
       onnxruntime_ENABLE_TRAINING_APIS=OFF \
       CMAKE_CXX_STANDARD=17 \
+      FETCHCONTENT_TRY_FIND_PACKAGE_MODE=NEVER \
       CMAKE_CXX_FLAGS="-Wno-error=range-loop-construct" \
     --build_wheel \
     --update \
