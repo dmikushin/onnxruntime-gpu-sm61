@@ -4,7 +4,7 @@
 
 pkgname=onnxruntime-gpu-sm61
 pkgver=1.23.2
-pkgrel=2
+pkgrel=3
 pkgdesc="ONNX Runtime with GPU support for SM_61 architecture only"
 arch=('x86_64')
 url="https://github.com/microsoft/onnxruntime"
@@ -19,8 +19,10 @@ makedepends=('cmake' 'git' 'pybind11' 'python-setuptools' 'python-wheel'
 provides=('onnxruntime' 'onnxruntime-gpu')
 conflicts=('onnxruntime' 'onnxruntime-gpu' 'onnxruntime-opt')
 source=("git+https://github.com/microsoft/onnxruntime.git#tag=v${pkgver}"
-        'fix-cstdint.patch')
+        'fix-cstdint.patch'
+        'sgemm-algo-table.patch')
 sha256sums=('SKIP'
+            'SKIP'
             'SKIP')
 
 prepare() {
@@ -28,6 +30,9 @@ prepare() {
 
   # Apply patch
   patch -p1 < "${srcdir}/fix-cstdint.patch"
+  # Per-shape cuBLAS algorithm table for fp32 GEMMs (provider option
+  # sgemm_algo_table): cuBLAS's own choice on Pascal is often far off.
+  patch -p1 < "${srcdir}/sgemm-algo-table.patch"
 
   # Initialize submodules
   git submodule update --init --recursive

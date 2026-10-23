@@ -8,4 +8,4 @@ cd "$(dirname "$0")"
 docker build -t onnxruntime-gpu-sm61-build . 2>&1 | tee build-image.log
 
 docker run --rm -v "$PWD:/pkg" -w /pkg onnxruntime-gpu-sm61-build \
-    makepkg --noconfirm 2>&1 | tee build.log
+    makepkg --noconfirm --cleanbuild --force 2>&1 | tee build.log

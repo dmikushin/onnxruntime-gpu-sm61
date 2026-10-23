@@ -1,0 +1,363 @@
+diff --git a/include/onnxruntime/core/providers/cuda/cuda_provider_options.h b/include/onnxruntime/core/providers/cuda/cuda_provider_options.h
+index 3b7a1e9..438b644 100644
+--- a/include/onnxruntime/core/providers/cuda/cuda_provider_options.h
++++ b/include/onnxruntime/core/providers/cuda/cuda_provider_options.h
+@@ -5,6 +5,7 @@
+ #pragma once
+ 
+ #include <limits>
++#include <string>
+ 
+ #include "onnxruntime_c_api.h"
+ #include "core/framework/arena_extend_strategy.h"
+@@ -40,4 +41,5 @@ struct OrtCUDAProviderOptionsV2 {
+   int use_tf32 = 1;                                                                                            // use TF32
+   int fuse_conv_bias = 0;                                                                                      // Enable CUDNN Frontend kernel fusing, results in JIT compiles
+   int sdpa_kernel = 0;                                                                                         // Scaled Dot Product Attention kernel option
++  std::string sgemm_algo_table;                                                                                // file naming the cuBLAS algorithm per fp32 GEMM shape (see core/providers/cuda/sgemm_algo_table.h)
+ };
+diff --git a/onnxruntime/core/providers/cuda/cuda_execution_provider.cc b/onnxruntime/core/providers/cuda/cuda_execution_provider.cc
+index e036c77..f03eab2 100644
+--- a/onnxruntime/core/providers/cuda/cuda_execution_provider.cc
++++ b/onnxruntime/core/providers/cuda/cuda_execution_provider.cc
+@@ -14,6 +14,7 @@
+ #include "core/providers/cuda/cuda_fwd.h"
+ #include "core/providers/cuda/gpu_data_transfer.h"
+ #include "core/providers/cuda/cuda_profiler.h"
++#include "core/providers/cuda/sgemm_algo_table.h"
+ #include "core/session/onnxruntime_run_options_config_keys.h"
+ 
+ #ifndef USE_CUDA_MINIMAL
+@@ -285,6 +286,10 @@ CUDAExecutionProvider::CUDAExecutionProvider(const CUDAExecutionProviderInfo& in
+   CUDA_CALL_THROW(cudaDeviceSynchronize());
+   CUDA_CALL_THROW(cudaGetDeviceProperties(&device_prop_, info_.device_id));
+ 
++  if (!info_.sgemm_algo_table.empty()) {
++    ORT_THROW_IF_ERROR(cuda::LoadSgemmAlgoTable(info_.sgemm_algo_table));
++  }
++
+   // This scenario is not supported.
+   ORT_ENFORCE(!(info.has_user_compute_stream && info.external_allocator_info.UseExternalAllocator()));
+ 
+diff --git a/onnxruntime/core/providers/cuda/cuda_execution_provider_info.cc b/onnxruntime/core/providers/cuda/cuda_execution_provider_info.cc
+index 1419570..d2678dd 100644
+--- a/onnxruntime/core/providers/cuda/cuda_execution_provider_info.cc
++++ b/onnxruntime/core/providers/cuda/cuda_execution_provider_info.cc
+@@ -36,6 +36,7 @@ constexpr const char* kUseEPLevelUnifiedStream = "use_ep_level_unified_stream";
+ constexpr const char* kUseTF32 = "use_tf32";
+ constexpr const char* kFuseConvBias = "fuse_conv_bias";
+ constexpr const char* kSdpaKernel = "sdpa_kernel";
++constexpr const char* kSgemmAlgoTable = "sgemm_algo_table";
+ 
+ }  // namespace provider_option_names
+ }  // namespace cuda
+@@ -139,6 +140,12 @@ CUDAExecutionProviderInfo CUDAExecutionProviderInfo::FromProviderOptions(const P
+                 ORT_RETURN_IF_ERROR(ParseStringWithClassicLocale(value_str, info.tunable_op.max_tuning_duration_ms));
+                 return Status::OK();
+               })
++          .AddValueParser(
++              cuda::provider_option_names::kSgemmAlgoTable,
++              [&info](const std::string& value_str) -> Status {
++                info.sgemm_algo_table = value_str;  // a path: taken verbatim
++                return Status::OK();
++              })
+           .Parse(options));
+ 
+   CUDAExecutionProviderExternalAllocatorInfo alloc_info{alloc, free, empty_cache};
+@@ -151,7 +158,7 @@ CUDAExecutionProviderInfo CUDAExecutionProviderInfo::FromProviderOptions(const P
+ }
+ 
+ ProviderOptions CUDAExecutionProviderInfo::ToProviderOptions(const CUDAExecutionProviderInfo& info) {
+-  const ProviderOptions options{
++  ProviderOptions options{
+       {cuda::provider_option_names::kDeviceId, MakeStringWithClassicLocale(info.device_id)},
+       {cuda::provider_option_names::kHasUserComputeStream, MakeStringWithClassicLocale(info.has_user_compute_stream)},
+       {cuda::provider_option_names::kUserComputeStream, MakeStringWithClassicLocale(reinterpret_cast<size_t>(info.user_compute_stream))},
+@@ -178,11 +185,16 @@ ProviderOptions CUDAExecutionProviderInfo::ToProviderOptions(const CUDAExecution
+       {cuda::provider_option_names::kFuseConvBias, MakeStringWithClassicLocale(info.fuse_conv_bias)},
+   };
+ 
++  // Only when set: an empty value is not a valid option value.
++  if (!info.sgemm_algo_table.empty()) {
++    options[cuda::provider_option_names::kSgemmAlgoTable] = info.sgemm_algo_table;
++  }
++
+   return options;
+ }
+ 
+ ProviderOptions CUDAExecutionProviderInfo::ToProviderOptions(const OrtCUDAProviderOptionsV2& info) {
+-  const ProviderOptions options{
++  ProviderOptions options{
+       {cuda::provider_option_names::kDeviceId, MakeStringWithClassicLocale(info.device_id)},
+       {cuda::provider_option_names::kHasUserComputeStream, MakeStringWithClassicLocale(info.has_user_compute_stream)},
+       {cuda::provider_option_names::kUserComputeStream, MakeStringWithClassicLocale(reinterpret_cast<size_t>(info.user_compute_stream))},
+@@ -202,6 +214,11 @@ ProviderOptions CUDAExecutionProviderInfo::ToProviderOptions(const OrtCUDAProvid
+       {cuda::provider_option_names::kSdpaKernel, MakeStringWithClassicLocale(info.sdpa_kernel)},
+   };
+ 
++  // Only when set: an empty value is not a valid option value.
++  if (!info.sgemm_algo_table.empty()) {
++    options[cuda::provider_option_names::kSgemmAlgoTable] = info.sgemm_algo_table;
++  }
++
+   return options;
+ }
+ 
+diff --git a/onnxruntime/core/providers/cuda/cuda_execution_provider_info.h b/onnxruntime/core/providers/cuda/cuda_execution_provider_info.h
+index bfd50ca..17f4437 100644
+--- a/onnxruntime/core/providers/cuda/cuda_execution_provider_info.h
++++ b/onnxruntime/core/providers/cuda/cuda_execution_provider_info.h
+@@ -82,6 +82,10 @@ struct CUDAExecutionProviderInfo {
+ 
+   int sdpa_kernel{0};
+ 
++  // File naming the cuBLAS algorithm to use per fp32 GEMM shape, measured on the
++  // target GPU (see sgemm_algo_table.h). Empty: cuBLAS's heuristic for all.
++  std::string sgemm_algo_table;
++
+   static CUDAExecutionProviderInfo FromProviderOptions(const ProviderOptions& options);
+   static ProviderOptions ToProviderOptions(const CUDAExecutionProviderInfo& info);
+   static ProviderOptions ToProviderOptions(const OrtCUDAProviderOptionsV2& info);
+@@ -115,6 +119,7 @@ struct std::hash<::onnxruntime::CUDAExecutionProviderInfo> {
+     onnxruntime::HashCombine(info.gpu_mem_limit, value);
+     onnxruntime::HashCombine(info.tunable_op.max_tuning_duration_ms, value);
+     onnxruntime::HashCombine(info.sdpa_kernel, value);
++    onnxruntime::HashCombine(std::hash<std::string>{}(info.sgemm_algo_table), value);
+ 
+     // Memory pointers
+     onnxruntime::HashCombine(reinterpret_cast<size_t>(info.user_compute_stream), value);
+diff --git a/onnxruntime/core/providers/cuda/cuda_provider_factory.cc b/onnxruntime/core/providers/cuda/cuda_provider_factory.cc
+index 3b361f1..33db464 100644
+--- a/onnxruntime/core/providers/cuda/cuda_provider_factory.cc
++++ b/onnxruntime/core/providers/cuda/cuda_provider_factory.cc
+@@ -231,6 +231,7 @@ struct CUDA_Provider : Provider {
+     info.use_ep_level_unified_stream = params->use_ep_level_unified_stream != 0;
+     info.use_tf32 = params->use_tf32 != 0;
+     info.sdpa_kernel = params->sdpa_kernel;
++    info.sgemm_algo_table = params->sgemm_algo_table;
+ 
+     return std::make_shared<CUDAProviderFactory>(info);
+   }
+@@ -267,6 +268,7 @@ struct CUDA_Provider : Provider {
+     cuda_options.use_tf32 = internal_options.use_tf32;
+     cuda_options.sdpa_kernel = internal_options.sdpa_kernel;
+     cuda_options.fuse_conv_bias = internal_options.fuse_conv_bias;
++    cuda_options.sgemm_algo_table = internal_options.sgemm_algo_table;
+   }
+ 
+   ProviderOptions GetProviderOptions(const void* provider_options) override {
+diff --git a/onnxruntime/core/providers/cuda/sgemm_algo_table.cc b/onnxruntime/core/providers/cuda/sgemm_algo_table.cc
+new file mode 100644
+index 0000000..8571613
+--- /dev/null
++++ b/onnxruntime/core/providers/cuda/sgemm_algo_table.cc
+@@ -0,0 +1,104 @@
++// Copyright (c) Microsoft Corporation. All rights reserved.
++// Licensed under the MIT License.
++
++#include "core/providers/shared_library/provider_api.h"
++#include "core/providers/cuda/sgemm_algo_table.h"
++
++#include <atomic>
++#include <fstream>
++#include <map>
++#include <shared_mutex>
++#include <sstream>
++#include <string_view>
++#include <tuple>
++
++namespace onnxruntime {
++namespace cuda {
++
++namespace {
++
++using Key = std::tuple<int, int, int, int, int, int, int, int, int64_t, int64_t, int64_t, int>;
++using Algos = std::map<Key, cublasGemmAlgo_t>;
++
++struct Table {
++  std::atomic<bool> loaded{false};  // no table: GEMMs skip the lock entirely
++  std::shared_mutex mutex;
++  std::map<std::string, Algos, std::less<>> by_device;  // std::less<>: look up by string_view
++};
++
++bool ValidOp(int op) { return op == CUBLAS_OP_N || op == CUBLAS_OP_T || op == CUBLAS_OP_C; }
++
++// cublasGemmAlgo_t values an fp32 GEMM can name: the default, ALGO0..23 and
++// the tensor-op ALGO0..15 (cuBLAS returns an error for the ones a GPU or
++// shape cannot run; the GEMM helpers fall back to cublasSgemm then).
++bool ValidAlgo(int algo) {
++  return (algo >= CUBLAS_GEMM_DEFAULT && algo <= CUBLAS_GEMM_ALGO23) ||
++         (algo >= CUBLAS_GEMM_DEFAULT_TENSOR_OP && algo <= CUBLAS_GEMM_ALGO15_TENSOR_OP);
++}
++
++Table& GetTable() {
++  static Table table;
++  return table;
++}
++
++Key MakeKey(const SgemmShape& s) {
++  return Key{s.transa, s.transb, s.m, s.n, s.k, s.lda, s.ldb, s.ldc,
++             s.stride_a, s.stride_b, s.stride_c, s.batch};
++}
++
++}  // namespace
++
++Status LoadSgemmAlgoTable(const std::string& path) {
++  std::ifstream in(path);
++  ORT_RETURN_IF_NOT(in, "sgemm_algo_table: cannot read ", path);
++  std::map<std::string, Algos> loaded;
++  std::string line, device;
++  for (int line_no = 1; std::getline(in, line); ++line_no) {
++    std::istringstream fields(line);
++    std::string kind;
++    if (!(fields >> kind) || kind[0] == '#') continue;
++    if (kind == "device") {
++      std::getline(fields >> std::ws, device);
++      continue;
++    }
++    ORT_RETURN_IF_NOT(kind == "gemm" || kind == "batched", path, ":", line_no,
++                      ": expected device, gemm or batched");
++    ORT_RETURN_IF(device.empty(), path, ":", line_no, ": entry before any device line");
++    int transa, transb, algo;
++    SgemmShape s{};
++    fields >> transa >> transb >> s.m >> s.n >> s.k >> s.lda >> s.ldb >> s.ldc;
++    if (kind == "batched") fields >> s.stride_a >> s.stride_b >> s.stride_c >> s.batch;
++    fields >> algo;
++    std::string extra;
++    ORT_RETURN_IF_NOT(fields && !(fields >> extra), path, ":", line_no, ": malformed ", kind,
++                      " entry");
++    ORT_RETURN_IF_NOT(ValidOp(transa) && ValidOp(transb) && s.m > 0 && s.n > 0 && s.k > 0 &&
++                          s.lda > 0 && s.ldb > 0 && s.ldc > 0 && (kind == "gemm" || s.batch > 0),
++                      path, ":", line_no, ": invalid shape in ", kind, " entry");
++    ORT_RETURN_IF_NOT(ValidAlgo(algo), path, ":", line_no, ": invalid cublasGemmAlgo_t ", algo);
++    s.transa = static_cast<cublasOperation_t>(transa);
++    s.transb = static_cast<cublasOperation_t>(transb);
++    loaded[device][MakeKey(s)] = static_cast<cublasGemmAlgo_t>(algo);
++  }
++  Table& table = GetTable();
++  std::unique_lock lock(table.mutex);
++  for (auto& [device, algos] : loaded) {
++    Algos& to = table.by_device[device];
++    for (auto& [key, algo] : algos) to[key] = algo;
++  }
++  table.loaded = !table.by_device.empty();
++  return Status::OK();
++}
++
++cublasGemmAlgo_t SgemmAlgo(const cudaDeviceProp& prop, const SgemmShape& shape) {
++  Table& table = GetTable();
++  if (!table.loaded) return CUBLAS_GEMM_DEFAULT;
++  std::shared_lock lock(table.mutex);
++  auto device = table.by_device.find(std::string_view{prop.name});
++  if (device == table.by_device.end()) return CUBLAS_GEMM_DEFAULT;
++  auto it = device->second.find(MakeKey(shape));
++  return it == device->second.end() ? CUBLAS_GEMM_DEFAULT : it->second;
++}
++
++}  // namespace cuda
++}  // namespace onnxruntime
+diff --git a/onnxruntime/core/providers/cuda/sgemm_algo_table.h b/onnxruntime/core/providers/cuda/sgemm_algo_table.h
+new file mode 100644
+index 0000000..8a4f769
+--- /dev/null
++++ b/onnxruntime/core/providers/cuda/sgemm_algo_table.h
+@@ -0,0 +1,51 @@
++// Copyright (c) Microsoft Corporation. All rights reserved.
++// Licensed under the MIT License.
++
++// Per-shape cuBLAS algorithm overrides for fp32 GEMMs.
++//
++// cublasSgemm lets cuBLAS's heuristic pick the kernel. On some GPUs (Pascal
++// in particular) that choice is often well off the fastest algorithm for the
++// shape, by up to 3x per GEMM. A table measured offline on the target GPU
++// names the cublasGemmEx algorithm to use per exact shape; shapes not in the
++// table keep cublasSgemm. The table is loaded from the file given in the CUDA
++// EP provider option `sgemm_algo_table` and applies to every GPU of the same
++// model (cudaDeviceProp::name) in the process.
++//
++// File format: text, fields separated by blanks, '#' starts a comment line.
++//   device <cudaDeviceProp::name>
++//   gemm    <transa> <transb> <m> <n> <k> <lda> <ldb> <ldc> <algo>
++//   batched <transa> <transb> <m> <n> <k> <lda> <ldb> <ldc> <strideA> <strideB> <strideC> <batch> <algo>
++// transa/transb are cublasOperation_t values, algo a cublasGemmAlgo_t value;
++// the arguments are those of cublasSgemm / cublasSgemmStridedBatched. Entries
++// apply to the device named by the latest preceding `device` line.
++// A GPU that cannot run a tabled algorithm after all gets cublasSgemm's choice.
++
++#pragma once
++
++#include <cstdint>
++#include <string>
++
++#include <cublas_v2.h>
++#include <cuda_runtime.h>
++
++#include "core/providers/shared_library/provider_api.h"
++
++namespace onnxruntime {
++namespace cuda {
++
++struct SgemmShape {
++  cublasOperation_t transa, transb;
++  int m, n, k, lda, ldb, ldc;
++  int64_t stride_a = 0, stride_b = 0, stride_c = 0;
++  int batch = 0;  // 0: cublasSgemm, else cublasSgemmStridedBatched
++};
++
++// Adds the entries of `path` to the process-wide table (later entries for
++// the same device and shape replace earlier ones).
++Status LoadSgemmAlgoTable(const std::string& path);
++
++// The algorithm tabled for `shape` on a GPU like `prop`, else CUBLAS_GEMM_DEFAULT.
++cublasGemmAlgo_t SgemmAlgo(const cudaDeviceProp& prop, const SgemmShape& shape);
++
++}  // namespace cuda
++}  // namespace onnxruntime
+diff --git a/onnxruntime/core/providers/cuda/shared_inc/fpgeneric.h b/onnxruntime/core/providers/cuda/shared_inc/fpgeneric.h
+index de445e0..98be40a 100644
+--- a/onnxruntime/core/providers/cuda/shared_inc/fpgeneric.h
++++ b/onnxruntime/core/providers/cuda/shared_inc/fpgeneric.h
+@@ -14,6 +14,9 @@
+ #pragma once
+ #include <cuda_bf16.h>
+ #include "core/providers/cuda/cuda_common.h"
++#if defined(USE_CUDA)
++#include "core/providers/cuda/sgemm_algo_table.h"
++#endif
+ 
+ // Generalize library calls to be use in template functions
+ inline cublasStatus_t
+@@ -32,6 +35,17 @@ cublasGemmHelper(cublasHandle_t handle,
+   // To disable TF32, set environment variable NVIDIA_TF32_OVERRIDE = 0 or set provider option use_tf32 = 0
+   cublasMath_t mode = use_tf32 ? CUBLAS_TF32_TENSOR_OP_MATH : CUBLAS_DEFAULT_MATH;
+   onnxruntime::cuda::CublasMathModeSetter math_mode_setter(prop, handle, mode);
++  // A tuned algorithm for this exact shape (see sgemm_algo_table.h)? If this
++  // GPU cannot run it after all (status != SUCCESS: nothing was launched),
++  // cuBLAS's own choice below.
++  const cublasGemmAlgo_t algo = onnxruntime::cuda::SgemmAlgo(
++      prop, {transa, transb, m, n, k, lda, ldb, ldc});
++  if (algo != CUBLAS_GEMM_DEFAULT &&
++      cublasGemmEx(handle, transa, transb, m, n, k, alpha, A, CUDA_R_32F, lda, B, CUDA_R_32F,
++                   ldb, beta, C, CUDA_R_32F, ldc, CUBLAS_COMPUTE_32F,
++                   algo) == CUBLAS_STATUS_SUCCESS) {
++    return CUBLAS_STATUS_SUCCESS;
++  }
+ #else
+   ORT_UNUSED_PARAMETER(prop);
+   ORT_UNUSED_PARAMETER(use_tf32);
+@@ -346,6 +360,15 @@ inline cublasStatus_t cublasGemmStridedBatchedHelper(cublasHandle_t handle,
+ #if defined(USE_CUDA)
+   cublasMath_t mode = use_tf32 ? CUBLAS_TF32_TENSOR_OP_MATH : CUBLAS_DEFAULT_MATH;
+   onnxruntime::cuda::CublasMathModeSetter math_mode_setter(prop, handle, mode);
++  const cublasGemmAlgo_t algo = onnxruntime::cuda::SgemmAlgo(
++      prop, {transa, transb, m, n, k, lda, ldb, ldc, strideA, strideB, strideC, batch_count});
++  if (algo != CUBLAS_GEMM_DEFAULT &&
++      cublasGemmStridedBatchedEx(handle, transa, transb, m, n, k, alpha, A, CUDA_R_32F, lda,
++                                 strideA, B, CUDA_R_32F, ldb, strideB, beta, C, CUDA_R_32F, ldc,
++                                 strideC, batch_count, CUBLAS_COMPUTE_32F,
++                                 algo) == CUBLAS_STATUS_SUCCESS) {
++    return CUBLAS_STATUS_SUCCESS;
++  }
+ #else
+   ORT_UNUSED_PARAMETER(prop);
+   ORT_UNUSED_PARAMETER(use_tf32);
